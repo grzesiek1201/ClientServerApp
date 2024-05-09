@@ -1,126 +1,133 @@
-import sqlite3
-
+import psycopg2
+from psycopg2 import Error
 
 class DbBase:
-    def __init__(self, db_path):
-        self.db_name = db_path
+    def __init__(self):
         self.connection = None
         self.connected = False
+        self.DB_HOST = "localhost"
+        self.DB_DATABASE = "postgres"
+        self.DB_USER = "postgres"
+        self.DB_PASSWORD = "postgres"
+        self.DB_PORT = 5433
 
-    def __enter__(self):
-        self.connect()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.db_server_close()
-
-    def connect(self):
+    def get_connection(self):
         if not self.connected or (self.connection and self.connection.closed):
             try:
-                self.connection = sqlite3.connect(self.db_name)
-                self.connection.execute("PRAGMA foreign_keys = 1")
-                self.connection.row_factory = sqlite3.Row
+                self.connection = psycopg2.connect(
+                    host=self.DB_HOST,
+                    user=self.DB_USER,
+                    password=self.DB_PASSWORD,
+                    dbname=self.DB_DATABASE,
+                    port=self.DB_PORT,
+                    sslmode='disable'
+                )
+                self.connection.autocommit = True
                 self.connected = True
-                print("Connected to SQLite database.")
-            except sqlite3.Error as e:
-                print(f"Error while connecting to SQLite: {e}")
-                self.connection = None
+                print("Connected to PostgreSQL")
+            except (Exception, Error) as error:
+                print("Error while connecting to PostgreSQL:", error)
+                raise
 
         return self.connection
+
     def close_connection(self):
-        if self.connected:
-            self.connection.close()
-            print("SQLite connection closed.")
-            self.connected = False
+        try:
+            if self.connected and self.connection:
+                self.connection.close()
+                print("PostgreSQL connection is closed.")
+                self.connected = False
+        except Exception as e:
+            print(f"Error while closing connection: {e}")
 
     def execute_sql(self, sql, params=None):
         try:
-            cursor = self.connection.cursor()
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            self.connection.commit()
-            return cursor
-        except sqlite3.Error as e:
-            print(f"Error executing SQL query: {e}")
-            raise e
-
+            connection = self.get_connection()
+            cursor = connection.cursor()
+            cursor.execute(sql, params)
+            connection.commit()
+        except (Exception, Error) as error:
+            print(f"Error executing SQL query: {error}")
+            print(f"SQL Query: {sql}")
+            print(f"Params: {params}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
 
     def db_server_start(self):
         try:
-            self.execute_sql("CREATE TABLE IF NOT EXISTS UsersBase (id INTEGER PRIMARY KEY,username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'USER')")
-            self.execute_sql("CREATE TABLE IF NOT EXISTS UsersMessages (sender TEXT NOT NULL, recipient TEXT NOT NULL, message TEXT NOT NULL)")
+            self.execute_sql("CREATE TABLE IF NOT EXISTS UsersBase (id SERIAL PRIMARY KEY, username VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role VARCHAR(255) NOT NULL DEFAULT 'USER')")
+            self.execute_sql("CREATE TABLE IF NOT EXISTS UsersMessages (sender VARCHAR(255) NOT NULL, recipient VARCHAR(255) NOT NULL, message VARCHAR(255) NOT NULL)")
             print("Tables created successfully.")
-        except sqlite3.Error as e:
-            print("Error while creating tables:", e)
+        except (Exception, Error) as error:
+            print("Error while creating tables:", error)
 
     def register_user(self, username, password):
         try:
-            self.connection = sqlite3.connect(self.db_name)
-            sql = "INSERT INTO UsersBase (username, password) VALUES (?, ?)"
+            sql = "INSERT INTO UsersBase (username, password) VALUES (%s, %s)"
             params = (username, password)
-            cursor = self.execute_sql(sql, params)
-            if cursor:
-                self.connection.commit()
-                return "Registration successful."
-            else:
-                return "Failed to register user."
-        except sqlite3.Error as e:
-            print("Error registering user:", e)
+            self.execute_sql(sql, params)
+        except psycopg2.Error as e:
+            self.connection.rollback()
             raise e
 
     def authenticate_user(self, username, password):
         try:
-            self.connection = sqlite3.connect(self.db_name)
-            sql = "SELECT role FROM UsersBase WHERE username = ? AND password = ?"
-            params = (username, password)
-            cursor = self.execute_sql(sql, params)
-            role = cursor.fetchone()
-            print(f"SQL Query: {sql}")
-            print(f"Params: {params}")
-            print(f"Retrieved Role: {role}")
-            return role[0] if role else None
-        except sqlite3.Error as e:
+            with psycopg2.connect(
+                    host=self.DB_HOST,
+                    user=self.DB_USER,
+                    password=self.DB_PASSWORD,
+                    dbname=self.DB_DATABASE,
+                    port=self.DB_PORT,
+                    sslmode='disable'
+            ) as connection:
+                connection.autocommit = True
+                sql = "SELECT role FROM UsersBase WHERE username = %s AND password = %s"
+                params = (username, password)
+                with connection.cursor() as cursor:
+                    cursor.execute(sql, params)
+                    role = cursor.fetchone()
+                    print(f"SQL Query: {cursor.query}")
+                    print(f"Params: {params}")
+                    print(f"Retrieved Role: {role}")
+                    return role[0] if role else None
+        except psycopg2.Error as e:
             print(f"Error during authentication: {str(e)}")
             return None
 
     def get_user_role(self, username):
         try:
-            self.connection = sqlite3.connect(self.db_name)
             sql = "SELECT role FROM UsersBase WHERE username = %s"
             params = (username,)
             with self.connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 role = cursor.fetchone()
                 return role[0] if role else None
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             raise e
 
     def delete_user(self, username):
         try:
-            self.connection = sqlite3.connect(self.db_name)
             sql = "DELETE FROM UsersBase WHERE username = %s"
             params = (username,)
             self.execute_sql(sql, params)
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             self.connection.rollback()
             raise e
 
     def send_message(self, sender, recipient, message):
         try:
-            self.connection = sqlite3.connect(self.db_name)
             sql = "INSERT INTO UsersMessages (sender, recipient, message) VALUES (%s, %s, %s)"
             params = (sender, recipient, message)
             self.execute_sql(sql, params)
             return "Message sent."
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             print(f"Error sending message: {str(e)}")
             return f"Error sending message: {str(e)}"
 
     def read_messages(self, username):
         try:
-            self.connection = sqlite3.connect(self.db_name)
             sql = "SELECT sender, message FROM UsersMessages WHERE recipient = %s"
             params = (username,)
             cursor = self.connection.cursor()
@@ -128,39 +135,35 @@ class DbBase:
             messages = cursor.fetchall()
             cursor.close()
             return messages
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             print(f"Error reading messages: {str(e)}")
             return f"Error reading messages: {str(e)}"
 
     def show_all_messages(self, recipient):
         try:
-            self.connection = sqlite3.connect(self.db_name)
             sql = "SELECT sender, message FROM UsersMessages WHERE recipient = %s"
             params = (recipient,)
             with self.connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 messages = cursor.fetchall()
                 return messages
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             raise e
 
     def show_all_users(self):
         try:
-            self.connection = sqlite3.connect(self.db_name)
             sql = "SELECT username, role FROM UsersBase"
             with self.connection.cursor() as cursor:
                 cursor.execute(sql)
                 users = cursor.fetchall()
                 return users
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             raise e
 
     def db_server_close(self):
-        self.close_connection()
-        print('Server DB - CLOSED')
+	@@ -166,5 +161,6 @@ def db_server_close(self):
 
 
 if __name__ == "__main__":
-    db_name = r"C:\Users\gzywi\PycharmProjects\ServerClientApp\sqlite_db.db"
-    with DbBase(db_name) as db:
+    with DbBase() as db:
         db.db_server_start()
